@@ -1,0 +1,67 @@
+name: Deploy Laravel to cPanel via SSH
+
+on:
+  push:
+    branches: [ main ] # অথবা আপনার যে ব্রাঞ্চ থেকে ডিপ্লয় করতে চান (যেমন: master)
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2' # আপনার সার্ভারের PHP ভার্সন অনুযায়ী পরিবর্তন করুন (যেমন: 8.1, 8.2, 8.3)
+          extensions: mbstring, xml, ctype, iconv, intl, pdo, mysql, zip
+          tools: composer:v2
+
+      - name: Install Composer Dependencies
+        run: composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+
+      - name: Copy .env file (Production)
+        run: |
+          echo "${{ secrets.CPANEL_ENV_FILE }}" > .env
+
+      - name: Generate Application Key (if needed)
+        run: |
+          # যদি অলরেডি প্রোডাকশনে .env ফাইলে key থাকে, তবে এটি বাদ দিতে পারেন
+          php artisan key:generate --show
+
+      - name: Setup SSH Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+
+      - name: Deploy via rsync over SSH
+        env:
+          SSH_USER: ${{ secrets.CPANEL_SSH_USER }}
+          SSH_HOST: ${{ secrets.CPANEL_SSH_HOST }}
+          SSH_PORT: ${{ secrets.CPANEL_SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.CPANEL_DEPLOY_PATH }}
+        run: |
+          # সার্ভারে ফাইল পাঠানোর জন্য rsync ব্যবহার করা হচ্ছে
+          rsync -avz --delete \
+            -e "ssh -p $SSH_PORT -o StrictHostKeyChecking=no" \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='.env' \
+            ./ $SSH_USER@$SSH_HOST:$DEPLOY_PATH
+
+      - name: Run Artisan Commands on Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.CPANEL_SSH_HOST }}
+          username: ${{ secrets.CPANEL_SSH_USER }}
+          port: ${{ secrets.CPANEL_SSH_PORT }}
+          key: ${{ secrets.CPANEL_SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ secrets.CPANEL_DEPLOY_PATH }}
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+            php artisan migrate --force
